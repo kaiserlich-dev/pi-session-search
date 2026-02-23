@@ -3,7 +3,7 @@
  *
  * SQLite FTS5 index built incrementally on session_start.
  * Ctrl+F or /search opens an overlay palette to search, preview, resume, or
- * summarize past sessions.
+ * summarize past sessions into a new session.
  *
  * Search view:
  *   - Type to search (debounced, prefix-matched)
@@ -12,7 +12,7 @@
  *   - Escape → close
  *
  * Preview/actions view:
- *   - Tab to cycle action: Resume / Summarize / Back
+ *   - Tab / ←→ to cycle action: Resume / Inject Here / New + Context / Back
  *   - Enter to execute selected action
  *   - Escape → back to search
  */
@@ -66,10 +66,7 @@ function cleanSnippet(snippet: string): string {
 	return snippet.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
 }
 
-// ═══════════════════════════════════════════════════════════════════════════
-// ANSI helpers (same pattern as queue-picker / skill-palette)
-// ═══════════════════════════════════════════════════════════════════════════
-
+// ANSI helpers
 const dim = (s: string) => `\x1b[2m${s}\x1b[22m`;
 const bold = (s: string) => `\x1b[1m${s}\x1b[22m`;
 const cyan = (s: string) => `\x1b[36m${s}\x1b[39m`;
@@ -118,10 +115,18 @@ function makeBox(innerW: number) {
 type PaletteAction =
 	| { type: "cancel" }
 	| { type: "resume"; session: SearchResult }
-	| { type: "summarize"; session: SearchResult };
+	| { type: "summarize"; session: SearchResult }
+	| { type: "newSession"; session: SearchResult };
 
-type PreviewAction = "resume" | "summarize" | "back";
-const PREVIEW_ACTIONS: PreviewAction[] = ["resume", "summarize", "back"];
+type PreviewAction = "resume" | "summarize" | "newSession" | "back";
+const PREVIEW_ACTIONS: PreviewAction[] = ["resume", "summarize", "newSession", "back"];
+
+const ACTION_LABELS: Record<PreviewAction, string> = {
+	resume: "⏎ Resume",
+	summarize: "📋 Inject Here",
+	newSession: "✦ New + Context",
+	back: "← Back",
+};
 
 interface SearchState {
 	query: string;
@@ -130,7 +135,7 @@ interface SearchState {
 	mode: "search" | "preview";
 	previewSnippets: string[];
 	previewSession: SearchResult | null;
-	previewAction: number; // index into PREVIEW_ACTIONS
+	previewAction: number;
 	debounceTimer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -164,7 +169,6 @@ function createSearchComponent(
 
 		try {
 			const newResults = search(q);
-			// Preserve selection if the previously selected session is still in results
 			const prevPath = state.results[state.selected]?.sessionPath;
 			state.results = newResults;
 			if (prevPath) {
@@ -200,7 +204,6 @@ function createSearchComponent(
 		tui.requestRender();
 	}
 
-	/** Replace →text← FTS markers with bold yellow highlights. */
 	function hl(text: string): string {
 		return text.replace(/→([^←]*)←/g, (_m, p1) => bold(yellow(p1)));
 	}
@@ -224,7 +227,6 @@ function createSearchComponent(
 		lines.push(topBorder("Session Search"));
 		lines.push(emptyRow());
 
-		// Search input
 		const cursor = cyan("│");
 		const queryDisplay = state.query
 			? `${state.query}${cursor}`
@@ -265,21 +267,16 @@ function createSearchComponent(
 				const dateStr = formatDate(r.timestamp);
 				const projectStr = shortenProject(r.project, 24);
 
-				// Line 1: project + date
-				const header = `${prefix} ${isSel ? bold(cyan(projectStr)) : projectStr}  ${dim(dateStr)}`;
-				lines.push(row(`  ${header}`));
+				lines.push(row(`  ${prefix} ${isSel ? bold(cyan(projectStr)) : projectStr}  ${dim(dateStr)}`));
 
-				// Line 2: session title (first user message) — differentiates sessions from same project
 				if (r.title) {
 					const titleMaxW = innerW - 8;
 					const titleClean = r.title.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
 					lines.push(row(`    ${dim(italic(truncateToWidth(titleClean, titleMaxW, "…")))}`));
 				}
 
-				// Line 3: matched snippet with highlights
 				const snippet = hl(cleanSnippet(r.snippet));
-				const snippetMaxW = innerW - 8;
-				lines.push(row(`    ${truncateToWidth(snippet, snippetMaxW, "…")}`));
+				lines.push(row(`    ${truncateToWidth(snippet, innerW - 8, "…")}`));
 
 				if (i < endIdx - 1) lines.push(emptyRow());
 			}
@@ -300,7 +297,7 @@ function createSearchComponent(
 		return lines;
 	}
 
-	// ── Render preview with action bar ────────────────────────────────
+	// ── Render preview ────────────────────────────────────────────────
 
 	function renderPreview(): string[] {
 		const lines: string[] = [];
@@ -339,14 +336,13 @@ function createSearchComponent(
 		lines.push(emptyRow());
 		lines.push(divider());
 
-		// Action bar — Tab to cycle, Enter to execute
 		const actions = PREVIEW_ACTIONS.map((a, i) => {
-			const label = a === "resume" ? "⏎ Resume" : a === "summarize" ? "📋 Summarize" : "← Back";
+			const label = ACTION_LABELS[a];
 			if (i === state.previewAction) return bold(cyan(`[${label}]`));
 			return dim(`[${label}]`);
 		});
 
-		lines.push(row(`  ${actions.join("  ")}  ${dim(italic("tab"))} ${dim("cycle")}  ${dim(italic("enter"))} ${dim("go")}`));
+		lines.push(row(`  ${actions.join(" ")}  ${dim(italic("tab"))} ${dim("cycle")}`));
 		lines.push(bottomBorder());
 
 		return lines;
@@ -391,7 +387,6 @@ function createSearchComponent(
 			return;
 		}
 
-		// Printable characters → always go to search input
 		if (data.length === 1 && data.charCodeAt(0) >= 32) {
 			state.query += data;
 			debouncedSearch();
@@ -406,12 +401,14 @@ function createSearchComponent(
 			return;
 		}
 
-		if (matchesKey(data, "tab") || matchesKey(data, "left") || matchesKey(data, "right")) {
-			if (matchesKey(data, "left")) {
-				state.previewAction = (state.previewAction - 1 + PREVIEW_ACTIONS.length) % PREVIEW_ACTIONS.length;
-			} else {
-				state.previewAction = (state.previewAction + 1) % PREVIEW_ACTIONS.length;
-			}
+		if (matchesKey(data, "tab") || matchesKey(data, "right")) {
+			state.previewAction = (state.previewAction + 1) % PREVIEW_ACTIONS.length;
+			tui.requestRender();
+			return;
+		}
+
+		if (matchesKey(data, "left")) {
+			state.previewAction = (state.previewAction - 1 + PREVIEW_ACTIONS.length) % PREVIEW_ACTIONS.length;
 			tui.requestRender();
 			return;
 		}
@@ -423,18 +420,12 @@ function createSearchComponent(
 				tui.requestRender();
 				return;
 			}
-			if (action === "resume") {
-				done({ type: "resume", session: state.previewSession! });
-				return;
-			}
-			if (action === "summarize") {
-				done({ type: "summarize", session: state.previewSession! });
-				return;
-			}
+			const session = state.previewSession!;
+			if (action === "resume") done({ type: "resume", session });
+			else if (action === "summarize") done({ type: "summarize", session });
+			else if (action === "newSession") done({ type: "newSession", session });
 		}
 	}
-
-	// ── Component ─────────────────────────────────────────────────────
 
 	return {
 		render(_width: number): string[] {
@@ -442,13 +433,27 @@ function createSearchComponent(
 		},
 		invalidate() {},
 		handleInput(data: string) {
-			if (state.mode === "preview") {
-				handlePreviewInput(data);
-			} else {
-				handleSearchInput(data);
-			}
+			if (state.mode === "preview") handlePreviewInput(data);
+			else handleSearchInput(data);
 		},
 	};
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Summarize prompt
+// ═══════════════════════════════════════════════════════════════════════════
+
+function buildSummarizePrompt(session: SearchResult): string {
+	const project = session.project;
+	const date = formatDate(session.timestamp);
+	return (
+		`I found a relevant past session. Here are the details:\n` +
+		`- **Project:** ${project}\n` +
+		`- **Date:** ${date}\n` +
+		`- **Session file:** ${session.sessionPath}\n\n` +
+		`Please read this session file and provide a concise summary of what was discussed and accomplished. ` +
+		`Focus on the key decisions, outcomes, and any important context that might be relevant now.`
+	);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -458,6 +463,10 @@ function createSearchComponent(
 export default function sessionSearch(pi: ExtensionAPI): void {
 	let indexReady = false;
 	let indexing = false;
+
+	// Pending context injection — set when user picks "New + Context",
+	// consumed when the new session starts via session_switch.
+	let pendingContext: SearchResult | null = null;
 
 	async function ensureIndex(ctx?: ExtensionContext) {
 		if (indexing) return;
@@ -482,6 +491,24 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async () => {
 		closeDb();
+	});
+
+	// When a new session starts and we have pending context, inject it.
+	pi.on("session_switch", async (event, _ctx) => {
+		if (event.reason !== "new" || !pendingContext) return;
+
+		const session = pendingContext;
+		pendingContext = null;
+
+		// Inject summarize prompt into the fresh session and trigger the LLM
+		pi.sendMessage(
+			{
+				customType: "session-search-context",
+				content: buildSummarizePrompt(session),
+				display: true,
+			},
+			{ triggerTurn: true }
+		);
 	});
 
 	// ── Open search overlay ───────────────────────────────────────────
@@ -520,26 +547,28 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 		}
 
 		if (action.type === "summarize") {
-			const sessionPath = action.session.sessionPath;
-			const project = action.session.project;
-			const date = formatDate(action.session.timestamp);
-
-			ctx.ui.notify(`Summarizing: ${shortenProject(project, 40)}...`, "info");
+			ctx.ui.notify(`Summarizing: ${shortenProject(action.session.project, 40)}...`, "info");
 
 			pi.sendMessage(
 				{
 					customType: "session-search-context",
-					content:
-						`I found a relevant past session. Here are the details:\n` +
-						`- **Project:** ${project}\n` +
-						`- **Date:** ${date}\n` +
-						`- **Session file:** ${sessionPath}\n\n` +
-						`Please read this session file and provide a concise summary of what was discussed and accomplished. ` +
-						`Focus on the key decisions, outcomes, and any important context that might be relevant now.`,
+					content: buildSummarizePrompt(action.session),
 					display: true,
 				},
 				{ triggerTurn: true, deliverAs: "followUp" }
 			);
+			return;
+		}
+
+		if (action.type === "newSession") {
+			const project = shortenProject(action.session.project, 40);
+
+			// Stash the session — will be injected when /new creates the fresh session
+			pendingContext = action.session;
+
+			// Pre-fill /new and tell the user to press Enter
+			ctx.ui.setEditorText(`/new`);
+			ctx.ui.notify(`${project} — press Enter to start new session with context`, "info");
 			return;
 		}
 	}
