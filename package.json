@@ -1,0 +1,25 @@
+{
+  "name": "pi-session-search",
+  "version": "0.1.0",
+  "description": "Full-text search across pi sessions with FTS5 index and overlay UI",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kaiserlich-dev/pi-session-search"
+  },
+  "pi": {
+    "extensions": ["./extensions"]
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.8.1"
+  },
+  "peerDependencies": {
+    "@mariozechner/pi-coding-agent": "*",
+    "@mariozechner/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "typescript": "^5.9.3"
+  }
+}
