@@ -1,4 +1,4 @@
-import { matchesKey } from "@mariozechner/pi-tui";
+import { matchesKey, truncateToWidth, visibleWidth } from "@mariozechner/pi-tui";
 import type { Theme, PromptScreenState, PromptAction } from "../types";
 import { shortenProject } from "../types";
 import { makeBox } from "../lib/render-helpers";
@@ -72,10 +72,24 @@ export function renderPromptInput(
 	lines.push(emptyRow());
 
 	const cursor = accent("│");
-	const promptDisplay = state.customPrompt
-		? `${state.customPrompt}${cursor}`
-		: `${cursor}${muted("e.g. focus on the auth implementation decisions...")}`;
-	lines.push(row(`  ${dim("✎")} ${promptDisplay}`));
+	const prefixStr = `  ${dim("✎")} `;
+	const prefixW = 6; // "  ✎ " visible width
+	const textW = innerW - prefixW - 2; // usable width for text per line
+
+	if (!state.customPrompt) {
+		lines.push(row(`${prefixStr}${cursor}${muted("e.g. focus on the auth implementation decisions...")}`));
+	} else {
+		// Wrap text across multiple lines
+		const text = state.customPrompt;
+		const maxLines = 5;
+		for (let i = 0; i < maxLines && i * textW < text.length + 1; i++) {
+			const slice = text.slice(i * textW, (i + 1) * textW);
+			const isLastSlice = (i + 1) * textW >= text.length;
+			const linePrefix = i === 0 ? prefixStr : " ".repeat(prefixW);
+			const content = isLastSlice ? `${slice}${cursor}` : slice;
+			lines.push(row(`${linePrefix}${content}`));
+		}
+	}
 
 	lines.push(emptyRow());
 	lines.push(divider());
