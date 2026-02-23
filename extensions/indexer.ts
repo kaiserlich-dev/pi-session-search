@@ -125,7 +125,7 @@ function resetCodeDirsCache(): void {
  * Since path components can also contain hyphens, we resolve ambiguity
  * by checking actual directories under ~/code/ (greedy longest-match).
  */
-function projectFromDir(dirName: string): string {
+export function projectFromDir(dirName: string): string {
 	// Strip leading/trailing --
 	const encoded = dirName.replace(/^--/, "").replace(/--$/, "");
 	if (!encoded) return "unknown";
@@ -532,7 +532,7 @@ export async function rebuildIndex(onProgress?: (msg: string) => void): Promise<
  * (anything not a Unicode letter or digit), so inputs like `node.js`,
  * `foo/bar`, `can't`, `hello-world`, `R&D` produce valid tokens.
  */
-function sanitizeTokens(query: string): string[] {
+export function sanitizeTokens(query: string): string[] {
 	return query
 		.replace(/[^\p{L}\p{N}\s]/gu, " ")
 		.trim()
@@ -545,7 +545,7 @@ function sanitizeTokens(query: string): string[] {
  * All tokens are quoted for exact match; the last token also gets a
  * prefix wildcard for live-typing partial matching.
  */
-function buildFtsQuery(tokens: string[]): string {
+export function buildFtsQuery(tokens: string[]): string {
 	if (tokens.length === 0) return "";
 	return tokens
 		.map((t, i) => (i === tokens.length - 1 ? `"${t}"*` : `"${t}"`))
