@@ -116,8 +116,8 @@ function makeBox(innerW: number) {
 type PaletteAction =
 	| { type: "cancel" }
 	| { type: "resume"; session: SearchResult }
-	| { type: "summarize"; session: SearchResult }
-	| { type: "newSession"; session: SearchResult };
+	| { type: "summarize"; session: SearchResult; customPrompt?: string }
+	| { type: "newSession"; session: SearchResult; customPrompt?: string };
 
 type PreviewAction = "resume" | "summarize" | "newSession" | "back";
 const PREVIEW_ACTIONS: PreviewAction[] = ["resume", "summarize", "newSession", "back"];
@@ -133,11 +133,15 @@ interface SearchState {
 	query: string;
 	results: SearchResult[];
 	selected: number;
-	mode: "search" | "preview";
+	mode: "search" | "preview" | "promptInput";
 	previewSnippets: string[];
 	previewSession: SearchResult | null;
 	previewAction: number;
 	debounceTimer: ReturnType<typeof setTimeout> | null;
+	/** Which action triggered the prompt input */
+	pendingActionType: "summarize" | "newSession" | null;
+	/** Custom prompt text being typed */
+	customPrompt: string;
 }
 
 function createSearchComponent(
@@ -157,6 +161,8 @@ function createSearchComponent(
 		previewSession: null,
 		previewAction: 0,
 		debounceTimer: null,
+		pendingActionType: null,
+		customPrompt: "",
 	};
 
 	function doSearch() {
@@ -349,7 +355,74 @@ function createSearchComponent(
 		return lines;
 	}
 
+	// ── Render prompt input ───────────────────────────────────────────
+
+	function renderPromptInput(): string[] {
+		const lines: string[] = [];
+		const session = state.previewSession!;
+		const actionLabel = state.pendingActionType === "newSession" ? "New + Context" : "Inject Here";
+
+		lines.push(topBorder("Summary Focus"));
+		lines.push(emptyRow());
+
+		const projectStr = shortenProject(session.project, 40);
+		lines.push(row(`  ${bold(cyan("📂"))} ${cyan(projectStr)}  ${dim(`→ ${actionLabel}`)}`));
+
+		lines.push(emptyRow());
+		lines.push(divider());
+		lines.push(emptyRow());
+
+		const cursor = cyan("│");
+		const promptDisplay = state.customPrompt
+			? `${state.customPrompt}${cursor}`
+			: `${cursor}${dim(italic("e.g. focus on the auth implementation decisions..."))}`;
+		lines.push(row(`  ${dim("✎")} ${promptDisplay}`));
+
+		lines.push(emptyRow());
+		lines.push(divider());
+		lines.push(
+			row(`${dim(italic("enter"))} ${dim("default summary")}  ${dim(italic("type"))} ${dim("+ enter for custom")}  ${dim(italic("esc"))} ${dim("back")}`)
+		);
+		lines.push(bottomBorder());
+
+		return lines;
+	}
+
 	// ── Input handling ────────────────────────────────────────────────
+
+	function handlePromptInput(data: string) {
+		if (matchesKey(data, "escape")) {
+			state.mode = "preview";
+			state.customPrompt = "";
+			state.pendingActionType = null;
+			tui.requestRender();
+			return;
+		}
+
+		if (matchesKey(data, "return")) {
+			const session = state.previewSession!;
+			const prompt = state.customPrompt.trim() || undefined;
+			if (state.pendingActionType === "summarize") {
+				done({ type: "summarize", session, customPrompt: prompt });
+			} else {
+				done({ type: "newSession", session, customPrompt: prompt });
+			}
+			return;
+		}
+
+		if (matchesKey(data, "backspace")) {
+			if (state.customPrompt.length > 0) {
+				state.customPrompt = state.customPrompt.slice(0, -1);
+				tui.requestRender();
+			}
+			return;
+		}
+
+		if (data.length === 1 && data.charCodeAt(0) >= 32) {
+			state.customPrompt += data;
+			tui.requestRender();
+		}
+	}
 
 	function handleSearchInput(data: string) {
 		if (matchesKey(data, "escape")) {
@@ -422,19 +495,27 @@ function createSearchComponent(
 				return;
 			}
 			const session = state.previewSession!;
-			if (action === "resume") done({ type: "resume", session });
-			else if (action === "summarize") done({ type: "summarize", session });
-			else if (action === "newSession") done({ type: "newSession", session });
+			if (action === "resume") {
+				done({ type: "resume", session });
+			} else if (action === "summarize" || action === "newSession") {
+				state.pendingActionType = action;
+				state.customPrompt = "";
+				state.mode = "promptInput";
+				tui.requestRender();
+			}
 		}
 	}
 
 	return {
 		render(_width: number): string[] {
-			return state.mode === "preview" ? renderPreview() : renderSearch();
+			if (state.mode === "promptInput") return renderPromptInput();
+			if (state.mode === "preview") return renderPreview();
+			return renderSearch();
 		},
 		invalidate() {},
 		handleInput(data: string) {
-			if (state.mode === "preview") handlePreviewInput(data);
+			if (state.mode === "promptInput") handlePromptInput(data);
+			else if (state.mode === "preview") handlePreviewInput(data);
 			else handleSearchInput(data);
 		},
 	};
@@ -503,19 +584,23 @@ function extractSessionText(sessionPath: string): string {
  * Extracts conversation text first to strip images/thinking/tools,
  * then sends a single API call. Fast and cheap.
  */
-async function summarizeSession(session: SearchResult): Promise<string> {
+async function summarizeSession(session: SearchResult, focusPrompt?: string): Promise<string> {
 	const text = extractSessionText(session.sessionPath);
 	if (!text.trim()) return "Empty session — no user or assistant messages found.";
 
 	const project = session.project;
 	const date = formatDate(session.timestamp);
 
-	const systemPrompt = [
+	const systemParts = [
 		`You summarize coding agent sessions. Be concise but thorough.`,
 		`Use markdown headings for distinct topics.`,
 		`Focus on: key decisions, outcomes, what was built/fixed/configured,`,
 		`and important context someone continuing this work would need.`,
-	].join(" ");
+	];
+	if (focusPrompt) {
+		systemParts.push(`The user specifically wants you to focus on: ${focusPrompt}`);
+	}
+	const systemPrompt = systemParts.join(" ");
 
 	const userPrompt = [
 		`Project: ${project} | Date: ${date}`,
@@ -560,7 +645,7 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 
 	// Pending context injection — set when user picks "New + Context",
 	// consumed when the new session starts via session_switch.
-	let pendingContext: SearchResult | null = null;
+	let pendingContext: { session: SearchResult; customPrompt?: string } | null = null;
 
 	async function ensureIndex(ctx?: ExtensionContext) {
 		if (indexing) return;
@@ -591,14 +676,14 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 	pi.on("session_switch", async (event, ctx) => {
 		if (event.reason !== "new" || !pendingContext) return;
 
-		const session = pendingContext;
+		const { session, customPrompt } = pendingContext;
 		pendingContext = null;
 
 		const project = shortenProject(session.project, 40);
 		ctx.ui.setStatus("session-search", `🔍 Summarizing ${project} via Gemini...`);
 
 		try {
-			const summary = await summarizeSession(session);
+			const summary = await summarizeSession(session, customPrompt);
 
 			pi.sendMessage(
 				{
@@ -671,7 +756,7 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 			ctx.ui.notify(`Summarizing ${project} via Gemini Flash...`, "info");
 
 			try {
-				const summary = await summarizeSession(action.session);
+				const summary = await summarizeSession(action.session, action.customPrompt);
 
 				pi.sendMessage(
 					{
@@ -697,8 +782,8 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 		if (action.type === "newSession") {
 			const project = shortenProject(action.session.project, 40);
 
-			// Stash the session — will be injected when /new creates the fresh session
-			pendingContext = action.session;
+			// Stash the session + optional custom prompt — will be injected when /new creates the fresh session
+			pendingContext = { session: action.session, customPrompt: action.customPrompt };
 
 			// Pre-fill /new and tell the user to press Enter
 			ctx.ui.setEditorText(`/new`);
