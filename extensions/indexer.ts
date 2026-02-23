@@ -335,13 +335,18 @@ export function updateIndex(onProgress?: (msg: string) => void): number {
 export function search(query: string, limit = 20): SearchResult[] {
 	const db = getDb();
 
-	// FTS5 query — escape special chars, add * for prefix matching
-	const safeQuery = query
+	// FTS5 query — escape special chars, prefix-match last token for live typing
+	const tokens = query
 		.replace(/[":(){}[\]^~*]/g, " ")
 		.trim()
 		.split(/\s+/)
-		.filter(Boolean)
-		.map((t) => `"${t}"`)
+		.filter(Boolean);
+
+	if (tokens.length === 0) return [];
+
+	// All tokens exact, last token also gets prefix * for partial matching
+	const safeQuery = tokens
+		.map((t, i) => (i === tokens.length - 1 ? `${t}*` : `"${t}"`))
 		.join(" ");
 
 	if (!safeQuery) return [];
@@ -389,15 +394,17 @@ export function search(query: string, limit = 20): SearchResult[] {
 export function getSessionSnippets(sessionPath: string, query: string, limit = 10): string[] {
 	const db = getDb();
 
-	const safeQuery = query
+	const tokens = query
 		.replace(/[":(){}[\]^~*]/g, " ")
 		.trim()
 		.split(/\s+/)
-		.filter(Boolean)
-		.map((t) => `"${t}"`)
-		.join(" ");
+		.filter(Boolean);
 
-	if (!safeQuery) return [];
+	if (tokens.length === 0) return [];
+
+	const safeQuery = tokens
+		.map((t, i) => (i === tokens.length - 1 ? `${t}*` : `"${t}"`))
+		.join(" ");
 
 	const stmt = db.prepare(`
 		SELECT snippet(session_fts, 0, '→', '←', '…', 60) as snippet
