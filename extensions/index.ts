@@ -67,31 +67,30 @@ function cleanSnippet(snippet: string): string {
 	return snippet.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
 }
 
-// ANSI helpers
-const dim = (s: string) => `\x1b[2m${s}\x1b[22m`;
-const bold = (s: string) => `\x1b[1m${s}\x1b[22m`;
-const cyan = (s: string) => `\x1b[36m${s}\x1b[39m`;
-const yellow = (s: string) => `\x1b[33m${s}\x1b[39m`;
-const italic = (s: string) => `\x1b[3m${s}\x1b[23m`;
-
 // ═══════════════════════════════════════════════════════════════════════════
-// Box drawing
+// Box drawing — theme-aware with background fill
 // ═══════════════════════════════════════════════════════════════════════════
 
-function makeBox(innerW: number) {
+type Theme = Parameters<Parameters<ExtensionContext["ui"]["custom"]>[0]>[1];
+
+function makeBox(innerW: number, theme: Theme) {
+	const border = (s: string) => theme.fg("border", s);
+	const accent = (s: string) => theme.fg("accent", s);
+	const bg = (s: string) => theme.bg("customMessageBg", s);
+
 	function row(content = ""): string {
 		const clipped = truncateToWidth(content, innerW - 1, "");
 		const vis = visibleWidth(clipped);
 		const pad = Math.max(0, innerW - vis - 1);
-		return dim("│") + " " + clipped + " ".repeat(pad) + dim("│");
+		return bg(border("│") + " " + clipped + " ".repeat(pad) + border("│"));
 	}
 
 	function emptyRow(): string {
-		return dim("│") + " ".repeat(innerW) + dim("│");
+		return bg(border("│") + " ".repeat(innerW) + border("│"));
 	}
 
 	function divider(): string {
-		return dim(`├${"─".repeat(innerW)}┤`);
+		return bg(border(`├${"─".repeat(innerW)}┤`));
 	}
 
 	function topBorder(title: string): string {
@@ -99,11 +98,11 @@ function makeBox(innerW: number) {
 		const borderLen = Math.max(0, innerW - titleText.length);
 		const left = Math.floor(borderLen / 2);
 		const right = borderLen - left;
-		return dim(`╭${"─".repeat(left)}`) + dim(titleText) + dim(`${"─".repeat(right)}╮`);
+		return bg(border(`╭${"─".repeat(left)}`) + accent(titleText) + border(`${"─".repeat(right)}╮`));
 	}
 
 	function bottomBorder(): string {
-		return dim(`╰${"─".repeat(innerW)}╯`);
+		return bg(border(`╰${"─".repeat(innerW)}╯`));
 	}
 
 	return { row, emptyRow, divider, topBorder, bottomBorder };
@@ -147,10 +146,18 @@ interface SearchState {
 function createSearchComponent(
 	done: (action: PaletteAction) => void,
 	tui: any,
+	theme: Theme,
 ) {
 	const BOX_WIDTH = 82;
 	const innerW = BOX_WIDTH - 2;
-	const { row, emptyRow, divider, topBorder, bottomBorder } = makeBox(innerW);
+	const { row, emptyRow, divider, topBorder, bottomBorder } = makeBox(innerW, theme);
+
+	// Theme-aware text helpers
+	const dim = (s: string) => theme.fg("dim", s);
+	const muted = (s: string) => theme.fg("muted", s);
+	const accent = (s: string) => theme.fg("accent", s);
+	const bold = (s: string) => theme.bold(s);
+	const warn = (s: string) => theme.fg("warning", s);
 
 	const state: SearchState = {
 		query: "",
@@ -212,7 +219,7 @@ function createSearchComponent(
 	}
 
 	function hl(text: string): string {
-		return text.replace(/→([^←]*)←/g, (_m, p1) => bold(yellow(p1)));
+		return text.replace(/→([^←]*)←/g, (_m, p1) => bold(warn(p1)));
 	}
 
 	function wrapText(text: string, maxW: number, maxLines = 3): string[] {
@@ -234,10 +241,10 @@ function createSearchComponent(
 		lines.push(topBorder("Session Search"));
 		lines.push(emptyRow());
 
-		const cursor = cyan("│");
+		const cursor = accent("│");
 		const queryDisplay = state.query
 			? `${state.query}${cursor}`
-			: `${cursor}${dim(italic("type to search sessions..."))}`;
+			: `${cursor}${muted("type to search sessions...")}`;
 		lines.push(row(`  ${dim("◎")} ${queryDisplay}`));
 
 		try {
@@ -250,11 +257,11 @@ function createSearchComponent(
 
 		if (!state.query.trim()) {
 			lines.push(emptyRow());
-			lines.push(row(dim(italic("  Start typing to search across all sessions"))));
+			lines.push(row(muted("  Start typing to search across all sessions")));
 			lines.push(emptyRow());
 		} else if (state.results.length === 0) {
 			lines.push(emptyRow());
-			lines.push(row(dim(italic("  No results"))));
+			lines.push(row(muted("  No results")));
 			lines.push(emptyRow());
 		} else {
 			const maxVisible = 10;
@@ -269,17 +276,17 @@ function createSearchComponent(
 			for (let i = startIdx; i < endIdx; i++) {
 				const r = state.results[i];
 				const isSel = i === state.selected;
-				const prefix = isSel ? cyan("▸") : dim("·");
+				const prefix = isSel ? accent("▸") : dim("·");
 
 				const dateStr = formatDate(r.timestamp);
 				const projectStr = shortenProject(r.project, 24);
 
-				lines.push(row(`  ${prefix} ${isSel ? bold(cyan(projectStr)) : projectStr}  ${dim(dateStr)}`));
+				lines.push(row(`  ${prefix} ${isSel ? bold(accent(projectStr)) : projectStr}  ${dim(dateStr)}`));
 
 				if (r.title) {
 					const titleMaxW = innerW - 8;
 					const titleClean = r.title.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
-					lines.push(row(`    ${dim(italic(truncateToWidth(titleClean, titleMaxW, "…")))}`));
+					lines.push(row(`    ${muted(truncateToWidth(titleClean, titleMaxW, "…"))}`));
 				}
 
 				const snippet = hl(cleanSnippet(r.snippet));
@@ -297,7 +304,7 @@ function createSearchComponent(
 
 		lines.push(divider());
 		lines.push(
-			row(`${dim(italic("↑↓"))} ${dim("nav")}  ${dim(italic("enter"))} ${dim("select")}  ${dim(italic("esc"))} ${dim("close")}`)
+			row(`${muted("↑↓")} ${dim("nav")}  ${muted("enter")} ${dim("select")}  ${muted("esc")} ${dim("close")}`)
 		);
 		lines.push(bottomBorder());
 
@@ -315,11 +322,11 @@ function createSearchComponent(
 
 		const projectStr = shortenProject(session.project, 40);
 		const dateStr = formatDate(session.timestamp);
-		lines.push(row(`  ${bold(cyan("📂"))} ${bold(cyan(projectStr))}  ${dim(dateStr)}`));
+		lines.push(row(`  ${bold(accent("📂"))} ${bold(accent(projectStr))}  ${dim(dateStr)}`));
 
 		if (session.title) {
 			const titleClean = session.title.replace(/\n/g, " ").replace(/\s+/g, " ").trim();
-			lines.push(row(`  ${dim(italic(truncateToWidth(titleClean, innerW - 6, "…")))}`));
+			lines.push(row(`  ${muted(truncateToWidth(titleClean, innerW - 6, "…"))}`));
 		}
 
 		lines.push(emptyRow());
@@ -327,7 +334,7 @@ function createSearchComponent(
 		lines.push(emptyRow());
 
 		if (state.previewSnippets.length === 0) {
-			lines.push(row(dim(italic("  No matching snippets"))));
+			lines.push(row(muted("  No matching snippets")));
 		} else {
 			for (let i = 0; i < Math.min(state.previewSnippets.length, 6); i++) {
 				const snippet = hl(cleanSnippet(state.previewSnippets[i]));
@@ -345,11 +352,11 @@ function createSearchComponent(
 
 		const actions = PREVIEW_ACTIONS.map((a, i) => {
 			const label = ACTION_LABELS[a];
-			if (i === state.previewAction) return bold(cyan(`[${label}]`));
+			if (i === state.previewAction) return bold(accent(`[${label}]`));
 			return dim(`[${label}]`);
 		});
 
-		lines.push(row(`  ${actions.join(" ")}  ${dim(italic("tab"))} ${dim("cycle")}`));
+		lines.push(row(`  ${actions.join(" ")}  ${muted("tab")} ${dim("cycle")}`));
 		lines.push(bottomBorder());
 
 		return lines;
@@ -366,22 +373,22 @@ function createSearchComponent(
 		lines.push(emptyRow());
 
 		const projectStr = shortenProject(session.project, 40);
-		lines.push(row(`  ${bold(cyan("📂"))} ${cyan(projectStr)}  ${dim(`→ ${actionLabel}`)}`));
+		lines.push(row(`  ${bold(accent("📂"))} ${accent(projectStr)}  ${dim(`→ ${actionLabel}`)}`));
 
 		lines.push(emptyRow());
 		lines.push(divider());
 		lines.push(emptyRow());
 
-		const cursor = cyan("│");
+		const cursor = accent("│");
 		const promptDisplay = state.customPrompt
 			? `${state.customPrompt}${cursor}`
-			: `${cursor}${dim(italic("e.g. focus on the auth implementation decisions..."))}`;
+			: `${cursor}${muted("e.g. focus on the auth implementation decisions...")}`;
 		lines.push(row(`  ${dim("✎")} ${promptDisplay}`));
 
 		lines.push(emptyRow());
 		lines.push(divider());
 		lines.push(
-			row(`${dim(italic("enter"))} ${dim("default summary")}  ${dim(italic("type"))} ${dim("+ enter for custom")}  ${dim(italic("esc"))} ${dim("back")}`)
+			row(`${muted("enter")} ${dim("default summary")}  ${muted("type")} ${dim("+ enter for custom")}  ${muted("esc")} ${dim("back")}`)
 		);
 		lines.push(bottomBorder());
 
@@ -724,7 +731,7 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 		}
 
 		const action = await ctx.ui.custom<PaletteAction>(
-			(tui, _theme, _kb, done) => createSearchComponent(done, tui),
+			(tui, theme, _kb, done) => createSearchComponent(done, tui, theme),
 			{
 				overlay: true,
 				overlayOptions: {
