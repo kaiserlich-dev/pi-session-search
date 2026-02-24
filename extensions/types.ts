@@ -37,7 +37,8 @@ export type SearchAction =
 	| { type: "cancel" }
 	| { type: "select"; index: number }
 	| { type: "navigate"; direction: 1 | -1 }
-	| { type: "queryChanged"; query: string };
+	| { type: "queryChanged"; query: string; cursorPos: number }
+	| { type: "cursorMove"; cursorPos: number };
 
 export type PreviewAction =
 	| { type: "back" }
@@ -52,6 +53,7 @@ export type PromptAction =
 
 export interface SearchScreenState {
 	query: string;
+	cursorPos: number;
 	results: SearchResult[];
 	selected: number;
 	totalSessions: number;
@@ -67,6 +69,7 @@ export interface PromptScreenState {
 	session: SearchResult;
 	pendingActionType: "summarize" | "newSession";
 	customPrompt: string;
+	cursorPos: number;
 }
 
 // ── Utility functions ────────────────────────────────────────────────

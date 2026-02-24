@@ -33,15 +33,72 @@ export function handleSearchInput(
 		return { type: "navigate", direction: 1 };
 	}
 
-	if (matchesKey(data, "backspace")) {
-		if (state.query.length > 0) {
-			return { type: "queryChanged", query: state.query.slice(0, -1) };
+	// Cursor movement
+	if (matchesKey(data, "left")) {
+		if (state.cursorPos > 0) {
+			return { type: "cursorMove", cursorPos: state.cursorPos - 1 };
 		}
 		return;
 	}
 
-	if (data.length === 1 && data.charCodeAt(0) >= 32) {
-		return { type: "queryChanged", query: state.query + data };
+	if (matchesKey(data, "right")) {
+		if (state.cursorPos < state.query.length) {
+			return { type: "cursorMove", cursorPos: state.cursorPos + 1 };
+		}
+		return;
+	}
+
+	if (matchesKey(data, "home") || matchesKey(data, "ctrl+a")) {
+		return { type: "cursorMove", cursorPos: 0 };
+	}
+
+	if (matchesKey(data, "end") || matchesKey(data, "ctrl+e")) {
+		return { type: "cursorMove", cursorPos: state.query.length };
+	}
+
+	// Alt+Backspace / Ctrl+W: delete word before cursor
+	if (matchesKey(data, "ctrl+w") || matchesKey(data, "alt+backspace")) {
+		if (state.cursorPos === 0) return;
+		const before = state.query.slice(0, state.cursorPos);
+		const after = state.query.slice(state.cursorPos);
+		// Find word boundary: skip trailing spaces, then skip non-spaces
+		let i = before.length;
+		while (i > 0 && before[i - 1] === " ") i--;
+		while (i > 0 && before[i - 1] !== " ") i--;
+		const newQuery = before.slice(0, i) + after;
+		return { type: "queryChanged", query: newQuery, cursorPos: i };
+	}
+
+	// Backspace: delete char before cursor
+	if (matchesKey(data, "backspace")) {
+		if (state.cursorPos > 0) {
+			const newQuery =
+				state.query.slice(0, state.cursorPos - 1) +
+				state.query.slice(state.cursorPos);
+			return { type: "queryChanged", query: newQuery, cursorPos: state.cursorPos - 1 };
+		}
+		return;
+	}
+
+	// Delete: delete char after cursor
+	if (matchesKey(data, "delete")) {
+		if (state.cursorPos < state.query.length) {
+			const newQuery =
+				state.query.slice(0, state.cursorPos) +
+				state.query.slice(state.cursorPos + 1);
+			return { type: "queryChanged", query: newQuery, cursorPos: state.cursorPos };
+		}
+		return;
+	}
+
+	// Paste or single character: insert at cursor position
+	// Multi-char data = paste; single printable char = typing
+	if (data.length >= 1 && data.charCodeAt(0) >= 32 && !data.startsWith("\x1b")) {
+		const newQuery =
+			state.query.slice(0, state.cursorPos) +
+			data +
+			state.query.slice(state.cursorPos);
+		return { type: "queryChanged", query: newQuery, cursorPos: state.cursorPos + data.length };
 	}
 
 	return;
@@ -69,9 +126,14 @@ export function renderSearch(
 	lines.push(emptyRow());
 
 	const cursor = accent("│");
-	const queryDisplay = state.query
-		? `${state.query}${cursor}`
-		: `${cursor}${muted("type to search sessions...")}`;
+	let queryDisplay: string;
+	if (!state.query) {
+		queryDisplay = `${cursor}${muted("type to search sessions...")}`;
+	} else {
+		const before = state.query.slice(0, state.cursorPos);
+		const after = state.query.slice(state.cursorPos);
+		queryDisplay = `${before}${cursor}${after}`;
+	}
 	lines.push(row(`  ${dim("◎")} ${queryDisplay}`));
 
 	if (state.totalSessions > 0) {
@@ -81,7 +143,7 @@ export function renderSearch(
 	lines.push(emptyRow());
 	lines.push(divider());
 
-	if (!state.query.trim()) {
+	if (!state.query.trim() && state.results.length === 0) {
 		lines.push(emptyRow());
 		lines.push(row(muted("  Start typing to search across all sessions")));
 		lines.push(emptyRow());
@@ -117,16 +179,21 @@ export function renderSearch(
 				lines.push(row(`    ${muted(truncateToWidth(titleClean, titleMaxW, "…"))}`));
 			}
 
-			const snippet = hl(cleanSnippet(r.snippet), theme);
-			lines.push(row(`    ${truncateToWidth(snippet, innerW - 8, "…")}`));
+			const snippet = state.query.trim()
+				? hl(cleanSnippet(r.snippet), theme)
+				: muted(cleanSnippet(r.title || ""));
+			if (snippet) {
+				lines.push(row(`    ${truncateToWidth(snippet, innerW - 8, "…")}`));
+			}
 
 			if (i < endIdx - 1) lines.push(emptyRow());
 		}
 
 		lines.push(emptyRow());
 
+		const label = state.query.trim() ? "results" : "recent";
 		if (state.results.length > maxVisible) {
-			lines.push(row(dim(`  ${state.selected + 1}/${state.results.length} results`)));
+			lines.push(row(dim(`  ${state.selected + 1}/${state.results.length} ${label}`)));
 		}
 	}
 

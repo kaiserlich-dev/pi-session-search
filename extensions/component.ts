@@ -11,7 +11,7 @@ import type {
 import { handleSearchInput, renderSearch } from "./screens/search";
 import { handlePreviewInput, renderPreview } from "./screens/preview";
 import { handlePromptInput, renderPromptInput } from "./screens/prompt-input";
-import { search as indexerSearch, getSessionSnippets, getStats } from "./indexer";
+import { search as indexerSearch, getSessionSnippets, getStats, listRecent } from "./indexer";
 
 const BOX_WIDTH = 82;
 
@@ -33,7 +33,10 @@ export class SessionSearchComponent {
 		} catch {
 			/* index may not be ready */
 		}
-		this.searchState = { query: "", results: [], selected: 0, totalSessions };
+		this.searchState = { query: "", cursorPos: 0, results: [], selected: 0, totalSessions };
+
+		// Load recent sessions immediately so user sees them on open
+		this.loadRecent();
 	}
 
 	render(_width: number): string[] {
@@ -99,8 +102,13 @@ export class SessionSearchComponent {
 				return false;
 			}
 
+			case "cursorMove":
+				this.searchState.cursorPos = action.cursorPos;
+				return false;
+
 			case "queryChanged":
 				this.searchState.query = action.query;
+				this.searchState.cursorPos = action.cursorPos;
 				this.debouncedSearch();
 				return false;
 		}
@@ -123,6 +131,7 @@ export class SessionSearchComponent {
 					session: this.previewState!.session,
 					pendingActionType: action.actionType,
 					customPrompt: "",
+					cursorPos: 0,
 				};
 				this.screen = "promptInput";
 				return false;
@@ -164,9 +173,12 @@ export class SessionSearchComponent {
 		const session = this.searchState.results[index];
 		if (!session) return;
 
+		const query = this.searchState.query.trim();
 		let snippets: string[];
 		try {
-			snippets = getSessionSnippets(session.sessionPath, this.searchState.query);
+			snippets = query
+				? getSessionSnippets(session.sessionPath, query)
+				: [session.title || "No preview available"];
 		} catch {
 			snippets = ["Failed to load snippets"];
 		}
@@ -175,11 +187,19 @@ export class SessionSearchComponent {
 		this.screen = "preview";
 	}
 
+	private loadRecent(): void {
+		try {
+			this.searchState.results = listRecent(20);
+			this.searchState.selected = 0;
+		} catch {
+			/* index may not be ready */
+		}
+	}
+
 	private doSearch(): void {
 		const q = this.searchState.query.trim();
 		if (!q) {
-			this.searchState.results = [];
-			this.searchState.selected = 0;
+			this.loadRecent();
 			this.tui.requestRender();
 			return;
 		}

@@ -23,15 +23,68 @@ export function handlePromptInput(
 		return { type: "confirm", customPrompt: prompt };
 	}
 
+	// Cursor movement
+	if (matchesKey(data, "left")) {
+		if (state.cursorPos > 0) state.cursorPos--;
+		return;
+	}
+
+	if (matchesKey(data, "right")) {
+		if (state.cursorPos < state.customPrompt.length) state.cursorPos++;
+		return;
+	}
+
+	if (matchesKey(data, "home") || matchesKey(data, "ctrl+a")) {
+		state.cursorPos = 0;
+		return;
+	}
+
+	if (matchesKey(data, "end") || matchesKey(data, "ctrl+e")) {
+		state.cursorPos = state.customPrompt.length;
+		return;
+	}
+
+	// Alt+Backspace / Ctrl+W: delete word before cursor
+	if (matchesKey(data, "ctrl+w") || matchesKey(data, "alt+backspace")) {
+		if (state.cursorPos === 0) return;
+		const before = state.customPrompt.slice(0, state.cursorPos);
+		const after = state.customPrompt.slice(state.cursorPos);
+		let i = before.length;
+		while (i > 0 && before[i - 1] === " ") i--;
+		while (i > 0 && before[i - 1] !== " ") i--;
+		state.customPrompt = before.slice(0, i) + after;
+		state.cursorPos = i;
+		return;
+	}
+
+	// Backspace: delete char before cursor
 	if (matchesKey(data, "backspace")) {
-		if (state.customPrompt.length > 0) {
-			state.customPrompt = state.customPrompt.slice(0, -1);
+		if (state.cursorPos > 0) {
+			state.customPrompt =
+				state.customPrompt.slice(0, state.cursorPos - 1) +
+				state.customPrompt.slice(state.cursorPos);
+			state.cursorPos--;
 		}
 		return;
 	}
 
-	if (data.length === 1 && data.charCodeAt(0) >= 32) {
-		state.customPrompt += data;
+	// Delete: delete char after cursor
+	if (matchesKey(data, "delete")) {
+		if (state.cursorPos < state.customPrompt.length) {
+			state.customPrompt =
+				state.customPrompt.slice(0, state.cursorPos) +
+				state.customPrompt.slice(state.cursorPos + 1);
+		}
+		return;
+	}
+
+	// Paste or single character: insert at cursor position
+	if (data.length >= 1 && data.charCodeAt(0) >= 32 && !data.startsWith("\x1b")) {
+		state.customPrompt =
+			state.customPrompt.slice(0, state.cursorPos) +
+			data +
+			state.customPrompt.slice(state.cursorPos);
+		state.cursorPos += data.length;
 		return;
 	}
 
@@ -79,15 +132,29 @@ export function renderPromptInput(
 	if (!state.customPrompt) {
 		lines.push(row(`${prefixStr}${cursor}${muted("e.g. focus on the auth implementation decisions...")}`));
 	} else {
+		// Insert cursor into text at cursor position
+		const before = state.customPrompt.slice(0, state.cursorPos);
+		const after = state.customPrompt.slice(state.cursorPos);
+		const textWithCursor = `${before}${cursor}${after}`;
+
 		// Wrap text across multiple lines
-		const text = state.customPrompt;
+		// Note: cursor adds ANSI codes but no visible width beyond the │ char
 		const maxLines = 5;
+		const text = state.customPrompt;
 		for (let i = 0; i < maxLines && i * textW < text.length + 1; i++) {
-			const slice = text.slice(i * textW, (i + 1) * textW);
-			const isLastSlice = (i + 1) * textW >= text.length;
+			const sliceStart = i * textW;
+			const sliceEnd = (i + 1) * textW;
 			const linePrefix = i === 0 ? prefixStr : " ".repeat(prefixW);
-			const content = isLastSlice ? `${slice}${cursor}` : slice;
-			lines.push(row(`${linePrefix}${content}`));
+
+			// Determine if cursor is in this line's range
+			if (state.cursorPos >= sliceStart && state.cursorPos <= Math.min(sliceEnd, text.length) && sliceStart <= text.length) {
+				const beforeInLine = text.slice(sliceStart, state.cursorPos);
+				const afterInLine = text.slice(state.cursorPos, sliceEnd);
+				lines.push(row(`${linePrefix}${beforeInLine}${cursor}${afterInLine}`));
+			} else if (sliceStart < text.length) {
+				const slice = text.slice(sliceStart, sliceEnd);
+				lines.push(row(`${linePrefix}${slice}`));
+			}
 		}
 	}
 

@@ -251,6 +251,9 @@ function extractContent(filePath: string): { chunks: string[]; firstUserMessage:
 		} else if (role === "assistant") {
 			const text = extractAssistantText(msg.content);
 			if (text) chunks.push(text);
+		} else if (role === "toolResult") {
+			const text = extractToolResultText(msg.content);
+			if (text) chunks.push(text);
 		}
 	}
 
@@ -276,6 +279,20 @@ function extractAssistantText(content: any): string {
 	const parts: string[] = [];
 	for (const block of content) {
 		// Skip thinking blocks and tool calls
+		if (block.type === "text" && block.text) {
+			parts.push(block.text);
+		}
+	}
+	return parts.join(" ");
+}
+
+/** Extract text from toolResult content blocks. */
+function extractToolResultText(content: any): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+
+	const parts: string[] = [];
+	for (const block of content) {
 		if (block.type === "text" && block.text) {
 			parts.push(block.text);
 		}
@@ -369,6 +386,9 @@ async function extractContentAsync(filePath: string): Promise<{ chunks: string[]
 			}
 		} else if (role === "assistant") {
 			const text = extractAssistantText(msg.content);
+			if (text) chunks.push(text);
+		} else if (role === "toolResult") {
+			const text = extractToolResultText(msg.content);
 			if (text) chunks.push(text);
 		}
 	}
@@ -636,6 +656,34 @@ export function getSessionTitle(sessionPath: string): string | null {
 		first_user_message: string | null;
 	} | undefined;
 	return row?.first_user_message ?? null;
+}
+
+/** List recent sessions, ordered by timestamp descending. */
+export function listRecent(limit = 20): SearchResult[] {
+	const db = getDb();
+
+	const stmt = db.prepare(`
+		SELECT path, project, session_ts, first_user_message
+		FROM sessions
+		ORDER BY session_ts DESC
+		LIMIT ?
+	`);
+
+	const rows = stmt.all(limit) as {
+		path: string;
+		project: string;
+		session_ts: string;
+		first_user_message: string | null;
+	}[];
+
+	return rows.map((row) => ({
+		sessionPath: row.path,
+		project: row.project,
+		timestamp: row.session_ts,
+		snippet: "",
+		rank: 0,
+		title: row.first_user_message,
+	}));
 }
 
 export function getStats(): IndexStats {
