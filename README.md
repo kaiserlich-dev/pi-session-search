@@ -22,7 +22,8 @@ Then restart pi or run `/reload`.
 
 ## Features
 
-- **FTS5 index** — indexes user messages, assistant responses, and session metadata. Sub-100ms queries regardless of session count.
+- **FTS5 index** — indexes user messages, assistant responses, tool results, and session metadata. Sub-100ms queries regardless of session count.
+- **Browse recent sessions** — opening search shows your most recent sessions immediately, no typing required.
 - **Incremental indexing** — only processes new/changed sessions. Runs async in background on startup with cooperative yielding.
 - **Overlay search palette** — theme-aware UI matching pi-skill-picker / pi-queue-picker style.
 - **Preview** — see matched snippets with highlighted search terms before deciding.
@@ -46,9 +47,17 @@ Then restart pi or run `/reload`.
 | Key | Action |
 |---|---|
 | Type | Search query (debounced) |
+| `←` / `→` | Move cursor within query |
+| `Home` / `Ctrl+A` | Jump to start of query |
+| `End` / `Ctrl+E` | Jump to end of query |
+| `Delete` | Delete character after cursor |
+| `Ctrl+W` / `Alt+Backspace` | Delete word before cursor |
+| Paste | Insert clipboard text at cursor |
 | `↑` / `↓` | Navigate results |
 | `Enter` | Open preview for selected result |
 | `Esc` | Close |
+
+When opened with an empty query, recent sessions are shown (most recent first).
 
 ### Preview screen
 
@@ -73,7 +82,7 @@ The custom focus is passed to the LLM alongside the session content, steering th
 ## How it works
 
 1. On `session_start`, the indexer scans `~/.pi/agent/sessions/` for JSONL files.
-2. Files with a newer `mtime` than last indexed are parsed — user messages and assistant text (no thinking blocks) are extracted.
+2. Files with a newer `mtime` than last indexed are parsed — user messages, assistant text (no thinking blocks), and tool results are extracted.
 3. Text is chunked into ~4KB segments and inserted into a SQLite FTS5 table with Porter stemming.
 4. Searches use FTS5 `MATCH` with BM25 ranking, deduplicated per session at the SQL level.
 5. The index lives at `~/.pi-session-search/index.db` (~5–10MB for hundreds of sessions).
