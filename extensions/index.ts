@@ -6,7 +6,11 @@
  * summarize past sessions into a new session.
  */
 
-import type { ExtensionAPI, ExtensionContext } from "@mariozechner/pi-coding-agent";
+import type {
+	ExtensionAPI,
+	ExtensionContext,
+	ExtensionCommandContext,
+} from "@mariozechner/pi-coding-agent";
 import { Text } from "@mariozechner/pi-tui";
 import {
 	updateIndex,
@@ -19,6 +23,7 @@ import type { PaletteAction } from "./types";
 import { formatDate, shortenProject } from "./types";
 import { SessionSearchComponent } from "./component";
 import { summarizeSession } from "./summarizer";
+import { parseSearchResumePath, quoteCommandArg } from "./resume";
 
 export default function sessionSearch(pi: ExtensionAPI): void {
 	let indexReady = false;
@@ -126,16 +131,23 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 			const sessionPath = action.session.sessionPath;
 			const project = shortenProject(action.session.project, 40);
 
-			try {
-				const { execSync } = await import("node:child_process");
-				execSync("pbcopy", { input: sessionPath });
-			} catch {
-				/* non-fatal */
+			const commandCtx = ctx as ExtensionContext &
+				Partial<ExtensionCommandContext>;
+			if (typeof commandCtx.switchSession === "function") {
+				try {
+					const result = await commandCtx.switchSession(sessionPath);
+					if (!result.cancelled) {
+						ctx.ui.notify(`Resumed ${project}`, "info");
+					}
+				} catch (err) {
+					ctx.ui.notify(`Resume failed: ${err}`, "error");
+				}
+				return;
 			}
 
-			ctx.ui.setEditorText(`/resume`);
+			ctx.ui.setEditorText(`/search resume ${quoteCommandArg(sessionPath)}`);
 			ctx.ui.notify(
-				`${project} — path copied, press Enter for /resume`,
+				`${project} — press Enter to resume this session`,
 				"info",
 			);
 			return;
@@ -207,7 +219,27 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 	pi.registerCommand("search", {
 		description: "Full-text search across all pi sessions",
 		handler: async (args, ctx) => {
-			if (args?.trim() === "reindex") {
+			const trimmedArgs = args?.trim() ?? "";
+			const resumePath = parseSearchResumePath(trimmedArgs);
+
+			if (resumePath !== null) {
+				if (!resumePath) {
+					ctx.ui.notify("Usage: /search resume <sessionPath>", "warning");
+					return;
+				}
+
+				try {
+					const result = await ctx.switchSession(resumePath);
+					if (!result.cancelled) {
+						ctx.ui.notify(`Resumed: ${resumePath}`, "info");
+					}
+				} catch (err) {
+					ctx.ui.notify(`Resume failed: ${err}`, "error");
+				}
+				return;
+			}
+
+			if (trimmedArgs === "reindex") {
 				ctx.ui.notify("Rebuilding index from scratch...", "info");
 				indexReady = false;
 				try {
@@ -222,7 +254,7 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 				return;
 			}
 
-			if (args?.trim() === "stats") {
+			if (trimmedArgs === "stats") {
 				try {
 					const stats = getStats();
 					ctx.ui.notify(

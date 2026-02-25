@@ -39,6 +39,7 @@ Then restart pi or run `/reload`.
 |---|---|
 | `Ctrl+F` | Open search overlay |
 | `/search` | Open search overlay |
+| `/search resume <sessionPath>` | Resume a specific session by file path |
 | `/search reindex` | Clear and rebuild index from scratch |
 | `/search stats` | Show index statistics |
 
