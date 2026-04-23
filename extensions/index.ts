@@ -2,7 +2,7 @@
  * pi-session-search — Full-text search across all pi sessions.
  *
  * SQLite FTS5 index built incrementally on session_start.
- * Ctrl+F or /search opens an overlay palette to search, preview, resume, or
+ * Ctrl+Shift+F or /search opens an overlay palette to search, preview, resume, or
  * summarize past sessions into a new session.
  */
 
@@ -23,7 +23,7 @@ import {
 import type { PaletteAction } from "./types";
 import { formatDate, shortenProject } from "./types";
 import { SessionSearchComponent } from "./component";
-import { summarizeSession } from "./summarizer";
+import { setApiKey, summarizeSession } from "./summarizer";
 import {
 	buildSearchNewContextCommand,
 	parseSearchNewContextArgs,
@@ -285,11 +285,49 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 		}
 	}
 
-	pi.registerShortcut("ctrl+f", {
+	pi.registerShortcut("ctrl+shift+f", {
 		description: "Search sessions",
 		handler: (ctx) => openSearch(ctx as ExtensionContext),
 	});
 
+	// Prompt for the OpenRouter key locally instead of expecting users to paste
+	// secrets into a normal prompt or command argument.
+	pi.registerCommand("session-search-register-key", {
+		description: "Configure the OpenRouter API key for pi-session-search",
+		handler: async (args, ctx) => {
+			if (args?.trim()) {
+				ctx.ui.notify(
+					"This command prompts locally; do not pass the API key as an argument.",
+					"warning",
+				);
+			}
+
+			const apiKey = await ctx.ui.input(
+				"OpenRouter API key",
+				"Paste key and press Enter",
+			);
+			if (apiKey === undefined) {
+				ctx.ui.notify("OpenRouter key setup cancelled", "info");
+				return;
+			}
+
+			const trimmed = apiKey.trim();
+			if (!trimmed) {
+				ctx.ui.notify("OpenRouter key cannot be empty", "warning");
+				return;
+			}
+
+			try {
+				const secretsPath = setApiKey(trimmed);
+				ctx.ui.notify(
+					`Saved OpenRouter key to ${secretsPath}`,
+					"info",
+				);
+			} catch (err) {
+				ctx.ui.notify(`Failed to save OpenRouter key: ${err}`, "error");
+			}
+		},
+	});
 
 	pi.registerCommand("search", {
 		description: "Full-text search across all pi sessions",
