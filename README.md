@@ -20,6 +20,12 @@ pi install git:github.com/kaiserlich-dev/pi-session-search
 
 Then restart pi or run `/reload`.
 
+To configure OpenRouter for session summaries, run:
+
+```bash
+/session-search-register-key
+```
+
 ## Features
 
 - **FTS5 index** — indexes user messages, assistant responses, tool results, and session metadata. Sub-100ms queries regardless of session count.
@@ -30,16 +36,18 @@ Then restart pi or run `/reload`.
 - **Resume** — switch to a found session directly from the preview.
 - **Summarize & inject** — ask the LLM to read the full session and inject a summary into your current context.
 - **Custom focus prompt** — optionally provide a focus (e.g. "focus on the auth decisions") before summarizing, so the summary targets what you care about.
-- **New session with context** — start a fresh session with summarized context from a previous one.
+- **New session with context** — start a fresh session with summarized context from a previous one, seeded directly into the new session.
 - **Smart project names** — resolves `~/code/owner/repo` paths into readable `owner/repo` project labels.
 
 ## Usage
 
 | Shortcut / Command | Action |
 |---|---|
-| `Ctrl+F` | Open search overlay |
+| `Ctrl+Shift+F` | Open search overlay |
 | `/search` | Open search overlay |
-| `/search resume <sessionPath>` | Resume a specific session by file path |
+| `/session-search-register-key` | Prompt locally for the OpenRouter API key used for summaries |
+| `/search resume "<sessionPath>"` | Resume a specific session by file path |
+| `/search new-context "<sessionPath>" ["focus prompt"]` | Start a fresh session seeded with summary context from a prior session |
 | `/search reindex` | Clear and rebuild index from scratch |
 | `/search stats` | Show index statistics |
 
@@ -79,6 +87,28 @@ When choosing **Summarize** or **New + Context**, a prompt screen appears:
 | `Esc` | Back to preview |
 
 The custom focus is passed to the LLM alongside the session content, steering the summary toward what matters to you.
+
+When calling `/search` subcommands manually, use double-quoted arguments:
+- `/search resume "<sessionPath>"`
+- `/search new-context "<sessionPath>" ["focus prompt"]`
+
+## Summary model setup
+
+`/session-search-register-key` stores your OpenRouter key in:
+
+```text
+~/.session-search/secrets.json
+```
+
+with this shape:
+
+```json
+{
+  "apiKey": "YOUR_OPENROUTER_API_KEY"
+}
+```
+
+The command prompts locally, so you do not need to paste the key into a normal LLM prompt.
 
 ## How it works
 

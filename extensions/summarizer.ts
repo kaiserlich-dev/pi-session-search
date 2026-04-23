@@ -6,7 +6,14 @@ import { formatDate } from "./types";
 
 export const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 export const MODEL = "google/gemini-3-flash-preview";
-const SECRETS_PATH = path.join(os.homedir(), ".session-search", "secrets.json");
+// pi-session-search manages its own small secrets file for now instead of
+// wiring through pi's provider settings. `/session-search-register-key` writes
+// this file locally for the user.
+export const SECRETS_PATH = path.join(
+	os.homedir(),
+	".session-search",
+	"secrets.json",
+);
 
 let _apiKey: string | null = null;
 
@@ -18,12 +25,35 @@ export function getApiKey(): string {
 		return _apiKey!;
 	} catch {
 		throw new Error(
-			`No API key found at ${SECRETS_PATH}. Run: /openrouter provision session-search`,
+			`No API key found at ${SECRETS_PATH}. Run /session-search-register-key, or create that file with {"apiKey":"YOUR_OPENROUTER_API_KEY"}.`,
 		);
 	}
 }
 
-/** Extract user + assistant text from a session JSONL file. */
+// Persist the OpenRouter key in the simple file format this extension expects.
+// Returning the path keeps the command handler's success message straightforward.
+export function setApiKey(apiKey: string): string {
+	fs.mkdirSync(path.dirname(SECRETS_PATH), { recursive: true });
+	fs.writeFileSync(
+		SECRETS_PATH,
+		`${JSON.stringify({ apiKey }, null, 2)}\n`,
+		"utf-8",
+	);
+	try {
+		fs.chmodSync(SECRETS_PATH, 0o600);
+	} catch {
+		// Best-effort permission tightening; ignore on unsupported platforms.
+	}
+	_apiKey = apiKey;
+	return SECRETS_PATH;
+}
+
+/**
+ * Extract a clean text transcript from a session JSONL file.
+ *
+ * This deliberately keeps the summarizer away from raw JSONL noise. We only
+ * feed user/assistant text to Gemini, not the whole structured session file.
+ */
 export function extractSessionText(sessionPath: string): string {
 	const data = fs.readFileSync(sessionPath, "utf-8");
 	const lines = data.split("\n");
@@ -64,8 +94,9 @@ export function extractSessionText(sessionPath: string): string {
 
 /**
  * Summarize a session via Gemini Flash through OpenRouter.
- * Extracts conversation text first to strip images/thinking/tools,
- * then sends a single API call. Fast and cheap.
+ *
+ * The summarizer is intentionally simple: extract a lightweight transcript,
+ * optionally add a focus prompt, then make one completion request.
  */
 export async function summarizeSession(
 	session: SearchResult,
