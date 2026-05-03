@@ -33,13 +33,15 @@
     "better-sqlite3": "^11.8.1"
   },
   "peerDependencies": {
-    "@mariozechner/pi-coding-agent": "^0.63.1",
-    "@mariozechner/pi-tui": "^0.63.1"
+    "@mariozechner/pi-coding-agent": ">=0.69.0",
+    "@mariozechner/pi-tui": ">=0.69.0"
   },
   "scripts": {
     "publish:pi": "bash ./scripts/publish.sh"
   },
   "devDependencies": {
+    "@mariozechner/pi-coding-agent": "^0.72.1",
+    "@mariozechner/pi-tui": "^0.72.1",
     "@types/better-sqlite3": "^7.6.13",
     "tsx": "^4.21.0",
     "typescript": "^5.9.3"
