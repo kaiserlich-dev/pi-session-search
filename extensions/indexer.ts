@@ -211,6 +211,22 @@ function timestampFromFilename(filename: string): string {
 		.replace(/T(\d{2})-(\d{2})-(\d{2})-(\d+)Z/, "T$1:$2:$3.$4Z");
 }
 
+// Reconstruct the minimal SearchResult shape needed by `/search new-context`
+// from only a session file path. This lets the command path avoid relying on
+// in-memory objects captured before a session switch.
+export function sessionResultFromPath(sessionPath: string): SearchResult {
+	const filename = path.basename(sessionPath);
+	const dirName = path.basename(path.dirname(sessionPath));
+	return {
+		sessionPath,
+		project: projectFromDir(dirName),
+		timestamp: timestampFromFilename(filename),
+		snippet: "",
+		rank: 0,
+		title: null,
+	};
+}
+
 /** Extract indexable text from a JSONL session file. */
 function extractContent(filePath: string): { chunks: string[]; firstUserMessage: string | null } {
 	const chunks: string[] = [];

@@ -2,7 +2,7 @@
  * pi-session-search — Full-text search across all pi sessions.
  *
  * SQLite FTS5 index built incrementally on session_start.
- * Ctrl+F or /search opens an overlay palette to search, preview, resume, or
+ * Ctrl+Shift+F or /search opens an overlay palette to search, preview, resume, or
  * summarize past sessions into a new session.
  */
 
@@ -17,23 +17,26 @@ import {
 	rebuildIndex,
 	getStats,
 	closeDb,
+	sessionResultFromPath,
 	type SearchResult,
 } from "./indexer";
 import type { PaletteAction } from "./types";
 import { formatDate, shortenProject } from "./types";
 import { SessionSearchComponent } from "./component";
-import { summarizeSession } from "./summarizer";
-import { parseSearchResumePath, quoteCommandArg } from "./resume";
+import { setApiKey, summarizeSession } from "./summarizer";
+import {
+	buildSearchNewContextCommand,
+	parseSearchNewContextArgs,
+	parseSearchResumePath,
+	quoteCommandArg,
+} from "./resume";
 
 export default function sessionSearch(pi: ExtensionAPI): void {
 	let indexReady = false;
 	let indexing = false;
 
-	// Pending context injection — set when user picks "New + Context",
-	// consumed when the new session starts via session_switch.
-	let pendingContext: { session: SearchResult; customPrompt?: string } | null =
-		null;
-
+	// Keep indexing single-flight so startup, `/search`, and Ctrl+F do not kick
+	// off overlapping scans of the same session directory.
 	async function ensureIndex(ctx?: ExtensionContext) {
 		if (indexing) return;
 		indexing = true;
@@ -51,6 +54,97 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 		}
 	}
 
+	function buildSummaryMessage(session: SearchResult, summary: string): string {
+		return (
+			`## Session Summary: ${session.project}\n` +
+			`**Date:** ${formatDate(session.timestamp)} | **File:** ${session.sessionPath}\n\n` +
+			summary
+		);
+	}
+
+	function isMissingSummaryKeyError(error: unknown): boolean {
+		const message = error instanceof Error ? error.message : String(error);
+		return (
+			message.includes("No API key found at") ||
+			message.includes("/session-search-register-key")
+		);
+	}
+
+	function buildSummaryUnavailableMessage(
+		session: SearchResult,
+		error: unknown,
+	): string {
+		const body = isMissingSummaryKeyError(error)
+			? [
+				"Warning: Gemini key not configured; no summary added.",
+				"Run `/session-search-register-key` and paste your OpenRouter API key into the local prompt.",
+				"Assistant: if the user asks about the missing summary, explain that setup step clearly.",
+			].join(" ")
+			: [
+				"Warning: Gemini summary failed; no summary added.",
+				"Assistant: if the user asks about the missing summary, tell them summary generation failed and they can retry.",
+			].join(" ");
+		return (
+			`## Session Summary: ${session.project}\n` +
+			`**Date:** ${formatDate(session.timestamp)} | **File:** ${session.sessionPath}\n\n` +
+			body
+		);
+	}
+
+	// New + Context is intentionally implemented as a real session replacement
+	// from a command handler. The important detail is seeding the new session in
+	// `setup`: pi rebuilds the chat from SessionManager state after replacement,
+	// so this is the reliable place to inject context.
+	async function startNewSessionWithContext(
+		ctx: ExtensionCommandContext,
+		session: SearchResult,
+		customPrompt?: string,
+	): Promise<void> {
+		const project = shortenProject(session.project, 40);
+		ctx.ui.setStatus(
+			"session-search",
+			`🔍 Summarizing ${project} via Gemini...`,
+		);
+
+		let content: string;
+		let notification: { message: string; level: "info" | "warning" } = {
+			message: `Context injected from ${project}`,
+			level: "info",
+		};
+
+		try {
+			const summary = await summarizeSession(session, customPrompt);
+			content = buildSummaryMessage(session, summary);
+		} catch (err) {
+			content = buildSummaryUnavailableMessage(session, err);
+			notification = {
+				message: isMissingSummaryKeyError(err)
+					? "Warning: Gemini key not configured; no summary added."
+					: `Gemini summary failed; no summary was added for ${project}`,
+				level: "warning",
+			};
+		} finally {
+			ctx.ui.setStatus("session-search", undefined);
+		}
+
+		const result = await ctx.newSession({
+			setup: async (sessionManager) => {
+				sessionManager.appendCustomMessageEntry(
+					"session-search-context",
+					content,
+					true,
+				);
+			},
+			withSession: async (newCtx) => {
+				newCtx.ui.notify(notification.message, notification.level);
+			},
+		});
+
+		if (result.cancelled) {
+			ctx.ui.notify("New session cancelled", "info");
+		}
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
 		setTimeout(() => ensureIndex(ctx), 100);
 	});
@@ -59,55 +153,13 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 		closeDb();
 	});
 
-	// When a new session starts and we have pending context, inject the Gemini summary.
-	pi.on("session_switch", async (event, ctx) => {
-		if (event.reason !== "new" || !pendingContext) return;
-
-		const { session, customPrompt } = pendingContext;
-		pendingContext = null;
-
-		const project = shortenProject(session.project, 40);
-		ctx.ui.setStatus(
-			"session-search",
-			`🔍 Summarizing ${project} via Gemini...`,
-		);
-
-		try {
-			const summary = await summarizeSession(session, customPrompt);
-
-			pi.sendMessage(
-				{
-					customType: "session-search-context",
-					content:
-						`## Session Summary: ${session.project}\n` +
-						`**Date:** ${formatDate(session.timestamp)} | **File:** ${session.sessionPath}\n\n` +
-						summary,
-					display: true,
-				},
-				{ triggerTurn: false },
-			);
-		} catch {
-			// Fallback: ask the LLM to read the file directly
-			pi.sendMessage(
-				{
-					customType: "session-search-context",
-					content:
-						`Gemini summary failed. Please read this session file and summarize:\n` +
-						`- **Project:** ${session.project}\n` +
-						`- **Date:** ${formatDate(session.timestamp)}\n` +
-						`- **Session file:** ${session.sessionPath}`,
-					display: true,
-				},
-				{ triggerTurn: true },
-			);
-		} finally {
-			ctx.ui.setStatus("session-search", undefined);
-		}
-	});
-
 	// ── Open search overlay ───────────────────────────────────────────
 
 	async function openSearch(ctx: ExtensionContext) {
+		// This overlay is shared by two entrypoints:
+		// - Ctrl+F shortcut -> plain ExtensionContext
+		// - /search command  -> ExtensionCommandContext at runtime
+		// Only the command path can call `newSession()` / `switchSession()`.
 		if (!indexReady && !indexing) {
 			ctx.ui.setStatus("session-search", "🔍 Building index...");
 			await ensureIndex(ctx);
@@ -128,6 +180,9 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 		if (action.type === "cancel") return;
 
 		if (action.type === "resume") {
+			// If we came from `/search`, resume directly. If we came from Ctrl+F, we
+			// fall back to prefilling a slash command and let the command handler do
+			// the actual session replacement.
 			const sessionPath = action.session.sessionPath;
 			const project = shortenProject(action.session.project, 40);
 
@@ -135,10 +190,14 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 				Partial<ExtensionCommandContext>;
 			if (typeof commandCtx.switchSession === "function") {
 				try {
-					const result = await commandCtx.switchSession(sessionPath);
-					if (!result.cancelled) {
-						ctx.ui.notify(`Resumed ${project}`, "info");
-					}
+					// pi ≥0.69 invalidates the outer ctx after switchSession;
+					// do post-switch work via the withSession callback using
+					// the fresh ReplacedSessionContext.
+					await commandCtx.switchSession(sessionPath, {
+						withSession: async (newCtx) => {
+							newCtx.ui.notify(`Resumed ${project}`, "info");
+						},
+					});
 				} catch (err) {
 					ctx.ui.notify(`Resume failed: ${err}`, "error");
 				}
@@ -154,6 +213,9 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 		}
 
 		if (action.type === "summarize") {
+			// Inject Here keeps the user in the current session. Even on failure we
+			// still inject a visible custom message so the user can see why no
+			// summary was added and the next assistant turn can relay the setup step.
 			const project = shortenProject(action.session.project, 40);
 			ctx.ui.setStatus(
 				"session-search",
@@ -184,7 +246,20 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 
 				ctx.ui.notify(`Summary injected from ${project}`, "info");
 			} catch (err) {
-				ctx.ui.notify(`Gemini summary failed: ${err}`, "error");
+				pi.sendMessage(
+					{
+						customType: "session-search-context",
+						content: buildSummaryUnavailableMessage(action.session, err),
+						display: true,
+					},
+					{ triggerTurn: false, deliverAs: "followUp" },
+				);
+				ctx.ui.notify(
+					isMissingSummaryKeyError(err)
+						? "Warning: Gemini key not configured; no summary added."
+						: `Gemini summary failed; added failure note for ${project}`,
+					"warning",
+				);
 			} finally {
 				ctx.ui.setStatus("session-search", undefined);
 			}
@@ -192,17 +267,16 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 		}
 
 		if (action.type === "newSession") {
+			// Ctrl+F cannot create the new session itself, so we prefill a command
+			// line and let `/search new-context ...` route into the command-only
+			// session-replacement API.
 			const project = shortenProject(action.session.project, 40);
-
-			// Stash the session + optional custom prompt — will be injected
-			// when /new creates the fresh session
-			pendingContext = {
-				session: action.session,
-				customPrompt: action.customPrompt,
-			};
-
-			// Pre-fill /new and tell the user to press Enter
-			ctx.ui.setEditorText(`/new`);
+			ctx.ui.setEditorText(
+				buildSearchNewContextCommand(
+					action.session.sessionPath,
+					action.customPrompt,
+				),
+			);
 			ctx.ui.notify(
 				`${project} — press Enter to start new session with context`,
 				"info",
@@ -211,28 +285,92 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 		}
 	}
 
-	pi.registerShortcut("ctrl+f", {
+	pi.registerShortcut("ctrl+shift+f", {
 		description: "Search sessions",
 		handler: (ctx) => openSearch(ctx as ExtensionContext),
+	});
+
+	// Prompt for the OpenRouter key locally instead of expecting users to paste
+	// secrets into a normal prompt or command argument.
+	pi.registerCommand("session-search-register-key", {
+		description: "Configure the OpenRouter API key for pi-session-search",
+		handler: async (args, ctx) => {
+			if (args?.trim()) {
+				ctx.ui.notify(
+					"This command prompts locally; do not pass the API key as an argument.",
+					"warning",
+				);
+			}
+
+			const apiKey = await ctx.ui.input(
+				"OpenRouter API key",
+				"Paste key and press Enter",
+			);
+			if (apiKey === undefined) {
+				ctx.ui.notify("OpenRouter key setup cancelled", "info");
+				return;
+			}
+
+			const trimmed = apiKey.trim();
+			if (!trimmed) {
+				ctx.ui.notify("OpenRouter key cannot be empty", "warning");
+				return;
+			}
+
+			try {
+				const secretsPath = setApiKey(trimmed);
+				ctx.ui.notify(
+					`Saved OpenRouter key to ${secretsPath}`,
+					"info",
+				);
+			} catch (err) {
+				ctx.ui.notify(`Failed to save OpenRouter key: ${err}`, "error");
+			}
+		},
 	});
 
 	pi.registerCommand("search", {
 		description: "Full-text search across all pi sessions",
 		handler: async (args, ctx) => {
+			// `/search` doubles as the interactive entrypoint and as the command
+			// trampoline for actions initiated from Ctrl+F (resume/new-context).
 			const trimmedArgs = args?.trim() ?? "";
+			const newContextArgs = parseSearchNewContextArgs(trimmedArgs);
 			const resumePath = parseSearchResumePath(trimmedArgs);
 
-			if (resumePath !== null) {
-				if (!resumePath) {
-					ctx.ui.notify("Usage: /search resume <sessionPath>", "warning");
+			if (newContextArgs !== null) {
+				if (!newContextArgs.sessionPath) {
+					ctx.ui.notify(
+						"Usage: /search new-context \"<sessionPath>\" [\"focus prompt\"]",
+						"warning",
+					);
 					return;
 				}
 
 				try {
-					const result = await ctx.switchSession(resumePath);
-					if (!result.cancelled) {
-						ctx.ui.notify(`Resumed: ${resumePath}`, "info");
-					}
+					await startNewSessionWithContext(
+						ctx,
+						sessionResultFromPath(newContextArgs.sessionPath),
+						newContextArgs.customPrompt,
+					);
+				} catch (err) {
+					ctx.ui.notify(`New + Context failed: ${err}`, "error");
+				}
+				return;
+			}
+
+			if (resumePath !== null) {
+				if (!resumePath) {
+					ctx.ui.notify("Usage: /search resume \"<sessionPath>\"", "warning");
+					return;
+				}
+
+				try {
+					await ctx.switchSession(resumePath, {
+						withSession: async (newCtx) => {
+							newCtx.ui.notify(`Resumed: ${resumePath}`, "info");
+						},
+					});
 				} catch (err) {
 					ctx.ui.notify(`Resume failed: ${err}`, "error");
 				}
@@ -274,6 +412,9 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 	pi.registerMessageRenderer(
 		"session-search-context",
 		(message, options, theme) => {
+			// This renderer handles both successful summaries and the "summary
+			// unavailable" notices. The collapsed header is deliberately explicit so
+			// users can spot missing-key/failure states without expanding the body.
 			const rawContent =
 				typeof message.content === "string"
 					? message.content
@@ -300,6 +441,12 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 				projectMatch?.[1]?.trim() ||
 				"session";
 			const date = dateMatch?.[1]?.trim() || "";
+			const missingKeyWarning = rawContent.includes(
+				"Warning: Gemini key not configured; no summary added.",
+			);
+			const summaryFailedWarning = rawContent.includes(
+				"Warning: Gemini summary failed; no summary added.",
+			);
 
 			if (options.expanded) {
 				const lines: string[] = [];
@@ -325,14 +472,17 @@ export default function sessionSearch(pi: ExtensionAPI): void {
 				return new Text(lines.join("\n"), 0, 0);
 			}
 
-			const header =
-				theme.fg("accent", "🔍 ") +
-				theme.fg(
-					"customMessageLabel",
-					theme.bold("Session context: "),
-				) +
-				theme.fg("accent", project) +
-				(date ? theme.fg("muted", ` (${date})`) : "");
+			const header = missingKeyWarning
+				? theme.fg("warning", "⚠ Warning: Gemini key not configured; no summary added.")
+				: summaryFailedWarning
+					? theme.fg("warning", "⚠ Warning: Gemini summary failed; no summary added.")
+					: theme.fg("accent", "🔍 ") +
+						theme.fg(
+							"customMessageLabel",
+							theme.bold("Session context: "),
+						) +
+						theme.fg("accent", project) +
+						(date ? theme.fg("muted", ` (${date})`) : "");
 
 			return new Text(header, 0, 0);
 		},

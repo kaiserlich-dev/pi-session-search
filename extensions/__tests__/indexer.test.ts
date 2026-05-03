@@ -1,7 +1,12 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import * as os from "node:os";
-import { sanitizeTokens, buildFtsQuery, projectFromDir } from "../indexer";
+import {
+	buildFtsQuery,
+	projectFromDir,
+	sanitizeTokens,
+	sessionResultFromPath,
+} from "../indexer";
 
 describe("sanitizeTokens", () => {
 	it('splits "node.js" into ["node", "js"]', () => {
@@ -56,5 +61,25 @@ describe("projectFromDir", () => {
 	it("returns encoded string when no code marker found", () => {
 		const result = projectFromDir("--some-random-path--");
 		assert.equal(result, "some-random-path");
+	});
+});
+
+describe("sessionResultFromPath", () => {
+	it("derives project and timestamp from session path", () => {
+		// This helper is intentionally pure string/path parsing.
+		// The `/tmp/...` prefix here is just a synthetic path; the test does not
+		// read or write any real files.
+		//
+		// We care about two things:
+		// 1. projectFromDir() still decodes the parent session directory name
+		// 2. the timestamp is reconstructed from the JSONL filename format
+		const encodedHome = os.homedir().slice(1).replace(/\//g, "-");
+		const result = sessionResultFromPath(
+			`/tmp/sessions/--${encodedHome}-workbench--/2026-04-22T10-11-12-345Z_abc123.jsonl`,
+		);
+
+		assert.equal(result.project, "workbench");
+		assert.equal(result.timestamp, "2026-04-22T10:11:12.345Z");
+		assert.equal(result.sessionPath.includes("abc123.jsonl"), true);
 	});
 });
